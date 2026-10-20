@@ -57,8 +57,6 @@ instance/
 
 .scrapy
 
-docs/_build/
-
 .pybuilder/
 target/
 
@@ -76,7 +74,6 @@ ipython_config.py
 __pypackages__/
 
 celerybeat-schedule*
-celerybeat.pid
 
 *.rdb
 *.aof
