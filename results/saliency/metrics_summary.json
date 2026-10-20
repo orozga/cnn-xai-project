@@ -1,0 +1,29 @@
+{
+  "image_count": 50,
+  "metrics": {
+    "deletion_auc": {
+      "mean": 0.040508,
+      "std": 0.03438,
+      "minimum": 0.005228,
+      "maximum": 0.218892
+    },
+    "insertion_auc": {
+      "mean": 0.056852,
+      "std": 0.047027,
+      "minimum": 0.00655,
+      "maximum": 0.23681
+    },
+    "gini": {
+      "mean": 0.455919,
+      "std": 0.040535,
+      "minimum": 0.394519,
+      "maximum": 0.564943
+    },
+    "normalized_entropy": {
+      "mean": 0.966021,
+      "std": 0.007178,
+      "minimum": 0.946189,
+      "maximum": 0.97542
+    }
+  }
+}
