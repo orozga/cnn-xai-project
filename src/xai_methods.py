@@ -10,6 +10,8 @@ from torch import nn
 
 AVAILABLE_METHODS: tuple[str, ...] = (
     "saliency",
+    "smoothgrad",
+    "integrated_gradients",
     "gradcam",
     "gradcam_pp",
     "scorecam",
@@ -17,6 +19,8 @@ AVAILABLE_METHODS: tuple[str, ...] = (
 
 METHOD_LABELS: dict[str, str] = {
     "saliency": "Saliency Maps",
+    "smoothgrad": "SmoothGrad",
+    "integrated_gradients": "Integrated Gradients",
     "gradcam": "Grad-CAM",
     "gradcam_pp": "Grad-CAM++",
     "scorecam": "Score-CAM",
@@ -118,6 +122,97 @@ def compute_saliency_map(
     saliency_np = _normalize_heatmap(saliency[0].cpu().numpy())
 
     return saliency_np, int(target_class_idx)
+
+
+def _resolve_target_class(
+    raw_model: nn.Module,
+    input_batch: torch.Tensor,
+    target_class_idx: int | None,
+) -> int:
+    if target_class_idx is not None:
+        return int(target_class_idx)
+    with torch.no_grad():
+        output = raw_model(input_batch)
+    return int(output.argmax(dim=1).item())
+
+
+def compute_smoothgrad(
+    model: Any,
+    input_batch: torch.Tensor,
+    target_class_idx: int | None = None,
+    num_samples: int = 25,
+    stdev_spread: float = 0.15,
+    batch_size: int = 25,
+) -> tuple[np.ndarray, int]:
+    """Compute SmoothGrad by averaging absolute input gradients over noisy samples."""
+    raw_model = _unwrap_model(model)
+    raw_model.eval()
+    device = next(raw_model.parameters()).device
+    x = input_batch.clone().detach().to(device)
+
+    resolved_class_idx = _resolve_target_class(raw_model, x, target_class_idx)
+
+    span = float((x.max() - x.min()).item())
+    stdev = stdev_spread * span if span > 1e-8 else stdev_spread
+
+    total_grads = torch.zeros_like(x)
+    for start in range(0, num_samples, batch_size):
+        chunk_size = min(batch_size, num_samples - start)
+        x_chunk = x.repeat(chunk_size, 1, 1, 1)
+        noise = torch.randn_like(x_chunk) * stdev
+        noisy_inputs = (x_chunk + noise).detach().requires_grad_(True)
+
+        outputs = raw_model(noisy_inputs)
+        score = outputs[:, resolved_class_idx].sum()
+        raw_model.zero_grad()
+        score.backward()
+
+        assert noisy_inputs.grad is not None
+        total_grads += noisy_inputs.grad.data.abs().sum(dim=0, keepdim=True)
+
+    avg_grads = total_grads / float(num_samples)
+    saliency, _ = torch.max(avg_grads, dim=1)
+    saliency_np = _normalize_heatmap(saliency[0].cpu().numpy())
+    return saliency_np, resolved_class_idx
+
+
+def compute_integrated_gradients(
+    model: Any,
+    input_batch: torch.Tensor,
+    target_class_idx: int | None = None,
+    steps: int = 50,
+    batch_size: int = 25,
+) -> tuple[np.ndarray, int]:
+    """Compute Integrated Gradients along the linear path from zero baseline to input."""
+    raw_model = _unwrap_model(model)
+    raw_model.eval()
+    device = next(raw_model.parameters()).device
+    x = input_batch.clone().detach().to(device)
+    baseline = torch.zeros_like(x)
+
+    resolved_class_idx = _resolve_target_class(raw_model, x, target_class_idx)
+
+    diff = x - baseline
+    alphas = torch.linspace(0.0, 1.0, steps, device=device).view(-1, 1, 1, 1)
+    total_grads = torch.zeros_like(x)
+
+    for start in range(0, steps, batch_size):
+        alpha_chunk = alphas[start : start + batch_size]
+        interpolated = (baseline + alpha_chunk * diff).detach().requires_grad_(True)
+
+        outputs = raw_model(interpolated)
+        score = outputs[:, resolved_class_idx].sum()
+        raw_model.zero_grad()
+        score.backward()
+
+        assert interpolated.grad is not None
+        total_grads += interpolated.grad.data.sum(dim=0, keepdim=True)
+
+    avg_grads = total_grads / float(steps)
+    ig = diff * avg_grads
+    saliency, _ = torch.max(ig.abs(), dim=1)
+    saliency_np = _normalize_heatmap(saliency[0].cpu().numpy())
+    return saliency_np, resolved_class_idx
 
 
 def compute_gradcam(
@@ -286,6 +381,23 @@ def explain_image(
     if method_key == "saliency":
         heatmap, class_idx = compute_saliency_map(
             model, input_batch, target_class_idx=target_class_idx
+        )
+    elif method_key == "smoothgrad":
+        heatmap, class_idx = compute_smoothgrad(
+            model,
+            input_batch,
+            target_class_idx=target_class_idx,
+            num_samples=kwargs.get("smoothgrad_samples", 25),
+            stdev_spread=kwargs.get("smoothgrad_stdev", 0.15),
+            batch_size=kwargs.get("batch_size", 25),
+        )
+    elif method_key == "integrated_gradients":
+        heatmap, class_idx = compute_integrated_gradients(
+            model,
+            input_batch,
+            target_class_idx=target_class_idx,
+            steps=kwargs.get("ig_steps", 50),
+            batch_size=kwargs.get("batch_size", 25),
         )
     elif method_key == "gradcam":
         heatmap, class_idx = compute_gradcam(

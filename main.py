@@ -15,7 +15,13 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=list(AVAILABLE_METHODS),
         choices=list(AVAILABLE_METHODS),
-        help="XAI methods to evaluate (default: all 4 core methods).",
+        help="XAI methods to evaluate (e.g. --methods smoothgrad integrated_gradients).",
+    )
+    parser.add_argument(
+        "--comparison-dir",
+        type=str,
+        default="results/comparison",
+        help="Directory for comparison plots and summary reports.",
     )
     parser.add_argument(
         "--image-dir",
@@ -78,6 +84,7 @@ def main() -> None:
         steps=args.steps,
         max_images=args.max_images,
         scorecam_max_channels=args.scorecam_max_channels,
+        comparison_dir=args.comparison_dir,
     )
 
     for method_key, summary in summaries.items():
@@ -86,8 +93,8 @@ def main() -> None:
             f"results/{method_key}/metrics_summary.json"
         )
     print(
-        "Comparative report saved to results/comparison/RAPORT_FAZA_2.md "
-        "and results/comparison/comparison_summary.json."
+        f"Comparative report saved to {args.comparison_dir}/RAPORT_FAZA_2.md "
+        f"and {args.comparison_dir}/comparison_summary.json."
     )
 
     if not args.skip_sanity_check:

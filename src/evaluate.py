@@ -132,6 +132,7 @@ def run_comparative_pipeline(
     steps: int = 20,
     max_images: int | None = None,
     scorecam_max_channels: int | None = None,
+    comparison_dir: str | Path = "results/comparison",
 ) -> dict[str, dict]:
     """Run unified XAI evaluation across all specified methods and generate comparison reports."""
     paths = sorted(get_sample_images_paths(str(image_dir)))
@@ -151,8 +152,8 @@ def run_comparative_pipeline(
     done_per_method: dict[str, dict[str, int]] = {m: {} for m in methods}
     done_comparison: dict[str, int] = {}
 
-    comparison_dir = Path("results/comparison")
-    comparison_dir.mkdir(parents=True, exist_ok=True)
+    comparison_path = Path(comparison_dir)
+    comparison_path.mkdir(parents=True, exist_ok=True)
 
     for image_path in paths:
         original_image, input_batch = load_and_preprocess_image(image_path)
@@ -248,7 +249,7 @@ def run_comparative_pipeline(
 
         done_comparison[class_name] = done_comparison.get(class_name, 0) + 1
         comp_path = (
-            comparison_dir
+            comparison_path
             / f"comparison_{class_name}_{done_comparison[class_name]}.png"
         )
         plot_methods_comparison(
@@ -271,7 +272,7 @@ def run_comparative_pipeline(
 
     save_comparison_report(
         summaries_by_method,
-        output_dir=comparison_dir,
+        output_dir=comparison_path,
         results_by_method=results_by_method,
     )
     return summaries_by_method
