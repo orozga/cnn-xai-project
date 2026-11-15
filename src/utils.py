@@ -115,16 +115,91 @@ def save_metrics_summary(
     return summary
 
 
+def _compute_win_rates(
+    results_by_method: dict[str, list[dict]],
+) -> dict[str, dict[str, dict[str, float]]]:
+    """Compute per-metric win counts and win-rate percentages across shared images."""
+    if len(results_by_method) < 2:
+        return {}
+
+    metric_directions = {
+        "deletion_auc": False,
+        "insertion_auc": True,
+        "gini": True,
+        "normalized_entropy": False,
+        "compute_time_sec": False,
+    }
+
+    records_by_method: dict[str, dict[str, dict]] = {
+        method: {r["image"]: r for r in records if "image" in r}
+        for method, records in results_by_method.items()
+    }
+    common_images = sorted(
+        set.intersection(*(set(recs.keys()) for recs in records_by_method.values()))
+    )
+    if not common_images:
+        return {}
+
+    win_counts: dict[str, dict[str, float]] = {
+        method: {m: 0.0 for m in metric_directions} for method in results_by_method
+    }
+
+    for img_name in common_images:
+        for metric_name, higher_is_better in metric_directions.items():
+            values = {
+                method: float(records_by_method[method][img_name][metric_name])
+                for method in results_by_method
+                if metric_name in records_by_method[method][img_name]
+            }
+            if not values:
+                continue
+            best_val = max(values.values()) if higher_is_better else min(values.values())
+            winners = [
+                method
+                for method, val in values.items()
+                if math.isclose(val, best_val, rel_tol=1e-9, abs_tol=1e-12)
+            ]
+            share = 1.0 / len(winners)
+            for winner in winners:
+                win_counts[winner][metric_name] += share
+
+    total_images = len(common_images)
+    return {
+        method: {
+            metric_name: {
+                "wins": round(count, 2),
+                "win_rate_pct": round(100.0 * count / total_images, 2),
+            }
+            for metric_name, count in metrics.items()
+        }
+        for method, metrics in win_counts.items()
+    }
+
+
 def save_comparison_report(
     summaries_by_method: dict[str, dict],
     output_dir: str | Path = "results/comparison",
+    results_by_method: dict[str, list[dict]] | None = None,
 ) -> None:
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    win_rates = _compute_win_rates(results_by_method) if results_by_method else {}
+    enriched_summaries: dict[str, dict] = {}
+    for method, summary in summaries_by_method.items():
+        method_copy = {**summary}
+        metrics_copy = {
+            m_name: {**m_vals} for m_name, m_vals in summary.get("metrics", {}).items()
+        }
+        for m_name, wr in win_rates.get(method, {}).items():
+            if m_name in metrics_copy:
+                metrics_copy[m_name].update(wr)
+        method_copy["metrics"] = metrics_copy
+        enriched_summaries[method] = method_copy
+
     json_path = out_dir / "comparison_summary.json"
     json_path.write_text(
-        json.dumps(summaries_by_method, indent=2, ensure_ascii=False) + "\n",
+        json.dumps(enriched_summaries, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
@@ -163,6 +238,26 @@ def save_comparison_report(
                 f"**Skuteczność klasyfikatora bazowego ResNet-50 (Top-1 Accuracy):** `{acc_values[0] * 100:.2f}%`",
             ]
         )
+
+    if win_rates:
+        lines.extend(
+            [
+                "",
+                "## Procentowe zwycięstwa w poszczególnych metrykach (Win Rate %)",
+                "",
+                "| Metoda | Deletion AUC (↓) | Insertion AUC (↑) | Gini Index (↑) | Znorm. Entropia (↓) | Czas [s] (↓) |",
+                "| :--- | :---: | :---: | :---: | :---: | :---: |",
+            ]
+        )
+        for method, method_wr in win_rates.items():
+            lines.append(
+                f"| **{method}** | "
+                f"{method_wr['deletion_auc']['win_rate_pct']:.1f}% | "
+                f"{method_wr['insertion_auc']['win_rate_pct']:.1f}% | "
+                f"{method_wr['gini']['win_rate_pct']:.1f}% | "
+                f"{method_wr['normalized_entropy']['win_rate_pct']:.1f}% | "
+                f"{method_wr['compute_time_sec']['win_rate_pct']:.1f}% |"
+            )
 
     md_path = out_dir / "RAPORT_FAZA_2.md"
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

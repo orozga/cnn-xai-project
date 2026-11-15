@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--steps",
         type=int,
-        default=20,
+        default=100,
         help="Number of Deletion/Insertion curve steps.",
     )
     parser.add_argument(

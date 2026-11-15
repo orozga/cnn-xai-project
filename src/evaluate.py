@@ -269,7 +269,11 @@ def run_comparative_pipeline(
         )
         summaries_by_method[method_key] = summary
 
-    save_comparison_report(summaries_by_method, output_dir=comparison_dir)
+    save_comparison_report(
+        summaries_by_method,
+        output_dir=comparison_dir,
+        results_by_method=results_by_method,
+    )
     return summaries_by_method
 
 

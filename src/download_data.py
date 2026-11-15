@@ -21,7 +21,7 @@ IMAGENETTE_SYNSET_TO_IMAGENET: dict[str, tuple[int, str]] = {
 
 
 def download_and_extract_imagenette(
-    output_dir: str = "data/sample_images", num_samples: int = 200
+    output_dir: str = "data/sample_images", num_samples: int = 500
 ) -> dict[str, dict]:
     destination = Path(output_dir)
     if destination.exists():
