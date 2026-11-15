@@ -8,11 +8,10 @@ methods in Convolutional Neural Networks, covering:
 4. Model Sensitivity & Sanity Checks: Cascading Parameter Randomization (Adebayo et al., 2018)
 """
 
-from typing import List, Tuple
 import numpy as np
 import torch
-import torch.nn as nn
 from PIL import Image
+from torch import nn
 
 
 def normalize_attribution(attribution_map: np.ndarray) -> np.ndarray:
@@ -34,7 +33,7 @@ def compute_deletion_curve(
     steps: int = 20,
     device: torch.device | None = None,
     replacement: str = "constant",
-) -> Tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, float]:
     """Compute Deletion Curve and Area Under Curve (AUC).
 
     Higher faithfulness corresponds to a LOWER Deletion AUC (rapid drop in confidence
@@ -119,7 +118,7 @@ def compute_insertion_curve(
     target_class_idx: int,
     steps: int = 20,
     device: torch.device | None = None,
-) -> Tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, float]:
     """Compute Insertion Curve and Area Under Curve (AUC).
 
     Higher faithfulness corresponds to a HIGHER Insertion AUC (rapid recovery of
@@ -177,7 +176,7 @@ def compute_insertion_curve(
 
 def compute_pointing_game_hit(
     attribution_map: np.ndarray,
-    bbox: Tuple[int, int, int, int],
+    bbox: tuple[int, int, int, int],
 ) -> bool:
     """Evaluate whether the maximum attribution point falls within ground truth bbox.
 
@@ -196,7 +195,7 @@ def compute_pointing_game_hit(
 
 def compute_energy_in_bbox(
     attribution_map: np.ndarray,
-    bbox: Tuple[int, int, int, int],
+    bbox: tuple[int, int, int, int],
 ) -> float:
     """Calculate the fraction of attribution energy located inside a bounding box."""
     norm_attr = normalize_attribution(attribution_map)
@@ -249,7 +248,7 @@ def compute_normalized_entropy(attribution_map: np.ndarray) -> float:
 
 def randomize_layers_cascading(
     model: nn.Module,
-    layer_names_cascading: List[str],
+    layer_names_cascading: list[str],
 ) -> None:
     """Cascading Parameter Randomization Sanity Check (Adebayo et al., 2018).
 
@@ -269,3 +268,21 @@ def randomize_layers_cascading(
             elif isinstance(module, nn.Linear):
                 nn.init.normal_(module.weight, 0, 0.01)
                 nn.init.constant_(module.bias, 0)
+
+
+if __name__ == "__main__":
+    print("Running quantitative XAI metrics verification...")
+    dummy_attr = np.zeros((224, 224), dtype=np.float32)
+    dummy_attr[80:140, 80:140] = 1.0
+    bbox = (70, 70, 150, 150)
+
+    hit = compute_pointing_game_hit(dummy_attr, bbox)
+    energy = compute_energy_in_bbox(dummy_attr, bbox)
+    gini = compute_sparsity_gini(dummy_attr)
+    entropy = compute_normalized_entropy(dummy_attr)
+
+    print(f"Pointing Game Hit (expected True): {hit}")
+    print(f"Energy in BBox (expected 1.0): {energy:.4f}")
+    print(f"Sparsity Gini Index: {gini:.4f}")
+    print(f"Normalized Shannon Entropy: {entropy:.4f}")
+    print("Metrics module verified successfully!")
