@@ -147,13 +147,13 @@ def compute_insertion_curve(
     baseline = torch.zeros_like(input_tensor)
     canvas = baseline.clone()
 
-    scores = []
-    fractions = []
+    probs = []
+    fractions_of_pixels = []
 
     with torch.no_grad():
         init_prob = torch.softmax(model(canvas), dim=1)[0, target_class_idx].item()
-        scores.append(init_prob)
-        fractions.append(0.0)
+        probs.append(init_prob)
+        fractions_of_pixels.append(0.0)
 
         flat_canvas = canvas.view(1, 3, -1)
         flat_input = input_tensor.view(1, 3, -1)
@@ -164,60 +164,18 @@ def compute_insertion_curve(
             flat_canvas[:, :, chunk] = flat_input[:, :, chunk]
 
             cur_prob = torch.softmax(model(canvas), dim=1)[0, target_class_idx].item()
-            scores.append(cur_prob)
-            fractions.append(idx_end / total_pixels)
+            probs.append(cur_prob)
+            fractions_of_pixels.append(idx_end / total_pixels)
 
-    scores_arr = np.array(scores)
-    fractions_arr = np.array(fractions)
-    auc_score = float(np.trapezoid(scores_arr, fractions_arr))
+    probs_arr = np.array(probs)
+    fractions_arr = np.array(fractions_of_pixels)
+    auc_score = float(np.trapezoid(probs_arr, fractions_arr))
 
-    return fractions_arr, scores_arr, auc_score
-
-
-def compute_pointing_game_hit(
-    attribution_map: np.ndarray,
-    bbox: tuple[int, int, int, int],
-) -> bool:
-    """Evaluate whether the maximum attribution point falls within ground truth bbox.
-
-    Args:
-        attribution_map: 2D heatmap array.
-        bbox: (xmin, ymin, xmax, ymax) coordinates.
-
-    Returns:
-        bool: True if argmax(attribution) is inside bbox, False otherwise.
-    """
-    max_idx = np.unravel_index(np.argmax(attribution_map), attribution_map.shape)
-    y_max, x_max = max_idx[0], max_idx[1]
-    xmin, ymin, xmax, ymax = bbox
-    return bool((xmin <= x_max <= xmax) and (ymin <= y_max <= ymax))
-
-
-def compute_energy_in_bbox(
-    attribution_map: np.ndarray,
-    bbox: tuple[int, int, int, int],
-) -> float:
-    """Calculate the fraction of attribution energy located inside a bounding box."""
-    norm_attr = normalize_attribution(attribution_map)
-    total_energy = float(np.sum(norm_attr))
-    if total_energy <= 1e-12:
-        return 0.0
-
-    xmin, ymin, xmax, ymax = bbox
-    xmin = max(0, int(xmin))
-    ymin = max(0, int(ymin))
-    xmax = min(norm_attr.shape[1], int(xmax))
-    ymax = min(norm_attr.shape[0], int(ymax))
-
-    bbox_energy = float(np.sum(norm_attr[ymin:ymax, xmin:xmax]))
-    return bbox_energy / total_energy
+    return fractions_arr, probs_arr, auc_score
 
 
 def compute_sparsity_gini(attribution_map: np.ndarray) -> float:
     """Compute Gini coefficient of the attribution map to measure sparsity/complexity.
-
-    Higher Gini (closer to 1.0) means explanation is sparse and concentrated on few pixels.
-    Lower Gini (closer to 0.0) means explanation is uniformly dispersed (noisy).
     """
     norm_attr = normalize_attribution(attribution_map).flatten()
     norm_attr = norm_attr + 1e-12
@@ -231,9 +189,7 @@ def compute_sparsity_gini(attribution_map: np.ndarray) -> float:
 
 
 def compute_normalized_entropy(attribution_map: np.ndarray) -> float:
-    """Compute normalized Shannon entropy of the attribution map.
-
-    Values in [0, 1]. Lower entropy means focused explanation; 1.0 means maximal diffusion.
+    """Compute normalized Shannon entropy of the attribution map. Values in [0, 1].
     """
     norm_attr = normalize_attribution(attribution_map).flatten()
     total = np.sum(norm_attr)
@@ -269,20 +225,3 @@ def randomize_layers_cascading(
                 nn.init.normal_(module.weight, 0, 0.01)
                 nn.init.constant_(module.bias, 0)
 
-
-if __name__ == "__main__":
-    print("Running quantitative XAI metrics verification...")
-    dummy_attr = np.zeros((224, 224), dtype=np.float32)
-    dummy_attr[80:140, 80:140] = 1.0
-    bbox = (70, 70, 150, 150)
-
-    hit = compute_pointing_game_hit(dummy_attr, bbox)
-    energy = compute_energy_in_bbox(dummy_attr, bbox)
-    gini = compute_sparsity_gini(dummy_attr)
-    entropy = compute_normalized_entropy(dummy_attr)
-
-    print(f"Pointing Game Hit (expected True): {hit}")
-    print(f"Energy in BBox (expected 1.0): {energy:.4f}")
-    print(f"Sparsity Gini Index: {gini:.4f}")
-    print(f"Normalized Shannon Entropy: {entropy:.4f}")
-    print("Metrics module verified successfully!")

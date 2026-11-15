@@ -13,6 +13,7 @@ AVAILABLE_METHODS: tuple[str, ...] = (
     "smoothgrad",
     "integrated_gradients",
     "gradcam",
+    "guided_gradcam",
     "gradcam_pp",
     "scorecam",
 )
@@ -22,6 +23,7 @@ METHOD_LABELS: dict[str, str] = {
     "smoothgrad": "SmoothGrad",
     "integrated_gradients": "Integrated Gradients",
     "gradcam": "Grad-CAM",
+    "guided_gradcam": "Guided Grad-CAM",
     "gradcam_pp": "Grad-CAM++",
     "scorecam": "Score-CAM",
 }
@@ -226,10 +228,10 @@ def compute_gradcam(
     )
     _, _, h, w = input_batch.shape
 
-    # Global Average Pooling of gradients: alpha_k^c = (1/Z) * sum_i sum_j d y^c / d A_{i,j}^k
+    # global average pooling, gradients shape: (1, 2048, H_l, W_l) -> weights shape: (1, 2048, 1, 1)
     weights = torch.mean(gradients, dim=(2, 3), keepdim=True)
 
-    # L_{Grad-CAM}^c = ReLU(sum_k alpha_k^c * A^k)
+    # weighted sum of activations
     cam = torch.sum(weights * activations, dim=1, keepdim=True)
     cam = F.relu(cam)
 
@@ -239,6 +241,58 @@ def compute_gradcam(
     cam_np = _normalize_heatmap(cam_upsampled[0, 0].cpu().numpy())
 
     return cam_np, int(target_class_idx)
+
+
+def compute_guided_gradcam(
+    model: Any,
+    input_batch: torch.Tensor,
+    target_class_idx: int | None = None,
+) -> tuple[np.ndarray, int]:
+    """Compute Guided Grad-CAM by multiplying Grad-CAM with Guided Backpropagation."""
+    gradcam_np, resolved_class_idx = compute_gradcam(
+        model, input_batch, target_class_idx=target_class_idx
+    )
+
+    raw_model = _unwrap_model(model)
+    raw_model.eval()
+    device = next(raw_model.parameters()).device
+
+    relu_modules: list[tuple[nn.ReLU, bool]] = []
+    hook_handles = []
+
+    def guided_relu_backward_hook(module, grad_input, grad_output):
+        if grad_input[0] is None:
+            return None
+        return (F.relu(grad_input[0]),)
+
+    for module in raw_model.modules():
+        if isinstance(module, nn.ReLU):
+            relu_modules.append((module, module.inplace))
+            module.inplace = False
+            hook_handles.append(
+                module.register_full_backward_hook(guided_relu_backward_hook)
+            )
+
+    try:
+        input_tensor = input_batch.clone().detach().to(device)
+        input_tensor.requires_grad_()
+        output = raw_model(input_tensor)
+        score = output[0, resolved_class_idx]
+        raw_model.zero_grad()
+        score.backward()
+
+        assert input_tensor.grad is not None
+        guided_bp = input_tensor.grad.data.abs()
+        guided_bp_2d, _ = torch.max(guided_bp, dim=1)
+        guided_bp_np = guided_bp_2d[0].cpu().numpy()
+    finally:
+        for handle in hook_handles:
+            handle.remove()
+        for module, orig_inplace in relu_modules:
+            module.inplace = orig_inplace
+
+    combined = gradcam_np * guided_bp_np
+    return _normalize_heatmap(combined), resolved_class_idx
 
 
 def compute_gradcam_pp(
@@ -252,15 +306,19 @@ def compute_gradcam_pp(
     )
     _, _, h, w = input_batch.shape
 
-    # Pixel-wise weighting coefficients alpha_{i,j}^{k,c}
+    # alpha weights using second and third order gradients
     grad_2 = gradients.pow(2)
     grad_3 = gradients.pow(3)
+
+    # similar to classic Grad-CAM, but with third order gradients to get pixel-wise weights
+    # dimensions: (1, 2048, H_l, W_l) -> (1, 2048, 1, 1) performed in the sum function
     spatial_sum = torch.sum(activations * grad_3, dim=(2, 3), keepdim=True)
     denom = 2.0 * grad_2 + spatial_sum + 1e-8
     alpha = grad_2 / denom
 
-    # w_k^c = sum_i sum_j alpha_{i,j}^{k,c} * ReLU(d y^c / d A_{i,j}^k)
     positive_gradients = F.relu(gradients)
+
+    # analogous to Grad-CAM, compute weights as the sum of alpha * positive gradients over spatial dimensions
     weights = torch.sum(alpha * positive_gradients, dim=(2, 3), keepdim=True)
 
     cam = torch.sum(weights * activations, dim=1, keepdim=True)
@@ -304,7 +362,6 @@ def compute_scorecam(
 
             activations = captured["activations"]  # (1, K, H_l, W_l)
 
-            # Baseline image X_b (zeros)
             baseline = torch.zeros_like(x)
             base_probs = F.softmax(raw_model(baseline), dim=1)
             base_score = base_probs[0, target_class_idx]
@@ -320,13 +377,11 @@ def compute_scorecam(
             num_selected = selected_activations.shape[1]
             cic_weights = torch.zeros(num_selected, device=device)
 
-            # Upsample all selected activation maps: Up(A_l^k) -> (num_selected, 1, H, W)
             act_reshaped = selected_activations.transpose(0, 1)
             upsampled = F.interpolate(
                 act_reshaped, size=(h, w), mode="bilinear", align_corners=False
             )
 
-            # Normalize each channel map to [0, 1]: s(Up(A_l^k))
             flat = upsampled.view(num_selected, -1)
             mins = flat.min(dim=1, keepdim=True)[0].view(num_selected, 1, 1, 1)
             maxs = flat.max(dim=1, keepdim=True)[0].view(num_selected, 1, 1, 1)
@@ -338,7 +393,6 @@ def compute_scorecam(
                 torch.zeros_like(upsampled),
             )
 
-            # Evaluate CIC in batches: f^c(X o s(Up(A_l^k))) - f^c(X_b)
             for start in range(0, num_selected, batch_size):
                 end = min(start + batch_size, num_selected)
                 batch_masks = norm_masks[start:end]
@@ -350,7 +404,6 @@ def compute_scorecam(
             cic_weights = cic_weights * valid_mask.float()
             weights = cic_weights.view(1, num_selected, 1, 1)
 
-            # L_{Score-CAM}^c = ReLU(sum_k alpha_k^c * A_l^k)
             cam = torch.sum(weights * selected_activations, dim=1, keepdim=True)
             cam = F.relu(cam)
             cam_upsampled = F.interpolate(
@@ -401,6 +454,10 @@ def explain_image(
         )
     elif method_key == "gradcam":
         heatmap, class_idx = compute_gradcam(
+            model, input_batch, target_class_idx=target_class_idx
+        )
+    elif method_key == "guided_gradcam":
+        heatmap, class_idx = compute_guided_gradcam(
             model, input_batch, target_class_idx=target_class_idx
         )
     elif method_key == "gradcam_pp":
