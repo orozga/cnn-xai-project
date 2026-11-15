@@ -50,6 +50,17 @@ def load_sample_metadata(folder_path: str | Path = "data/sample_images") -> dict
     return json.loads(metadata_path.read_text(encoding="utf-8"))
 
 
+def save_metrics_results(
+    results: list[dict], output_path: str | Path
+) -> None:
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(results, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 def save_metrics_summary(
     results: list[dict], output_path: str | Path
 ) -> dict:
